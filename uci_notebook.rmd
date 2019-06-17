@@ -1,0 +1,492 @@
+---
+title: "Customer Lifetime Value for an Online Retail Store"
+output:
+  html_document:
+    code_folding: hide
+    #fig_caption: yes
+    #fig_height: 4.5
+    #fig_width: 7
+    highlight: tango
+    number_sections: yes
+    theme: cosmo
+    #toc: yes
+  
+date: '`r Sys.Date()`'
+---
+```{r}
+options(rpubs.upload.method = "internal")
+```
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo=TRUE, error=FALSE)
+```
+# Introduction  {.tabset .tabset-fade .tabset-pills}
+
+So a couple of months back, I reached out to a few ecommerce companies to understand how they use CLV today. And here is what I noted
+
+## Problem
+
+B2C buisnesses struggle to capture/project customer purchase patterns in a typical non-contractual setting. As a result, they struggle to understand the actual value of their customers and end up trying to figure out the following challenges:
+
+* How much should they spend in acquiring a new customer for their product?
+
+* How do different segments of customers interact with a product?
+
+* How well does their product actually do in the market?
+
+* How can they drive the demand for their products higher and maximize returns from each customer?
+
+There are tools that help in driving engagement of customers high, but understanding a customer is still a challenge.
+
+## Solution
+Correctly estimating the lifetime value of each customer holds the key.
+
+* Knowing the right value of a new customer helps to understand how much should you be spending on a acquiring customers
+
+* Targeting different valued customers can help with smart allocation of marketing budget to increase customer engagement and stickiness
+
+* Figuring out how frequently does a particular customer transact and when will a customer transact next would help in predicting demand for different products among different customer segments
+
+
+## What is CLV?
+Customer Lifetime Value is the present value of the future cash flows attributed to the customer during a given time period.
+CLV gives sense to the amount of revenue each customer generates in a fixed interval of time. There are a few advanced statistical methods to describe and predict customer's purchase behavior in non-contractual settings. By fiting probabilistic models to historic transaction records one can compute customer-centric metrics of managerial interest.
+
+
+# CLV Analysis on UCI online retail store data {.tabset .tabset-fade .tabset-pills}
+The UCI online-retail dataset is a transnational data set which contains all the transactions occurring between 01/12/2010 and 09/12/2011 for a UK-based and registered non-store online retail.The company mainly sells unique all-occasion gifts. Many customers of the company are wholesalers. I wanted to analyze the lifetime value of each customer to predict when and how much would a customer buy next. 
+
+```{r, message=FALSE}
+library(dplyr)
+library(BTYD)
+library(ggplot2)
+```
+
+
+## Attribute information 
+```{r}
+#Read the data 
+ucl_data = read.csv("~/Downloads/Online_Retail.csv",stringsAsFactors = F)
+#Fix the date 
+ucl_data = ucl_data %>% mutate(InvoiceDate = as.Date(as.POSIXct(InvoiceDate,format = "%m/%d/%Y %H:%M")))
+str(ucl_data)
+```
+
+* InvoiceNo: Invoice number. Nominal, a 6-digit integral number uniquely assigned to each transaction. 
+* StockCode: Product (item) code. Nominal, a 5-digit integral number uniquely assigned to each distinct product.
+* Description: Product (item) name. Nominal.
+* Quantity: The quantities of each product (item) per transaction. Numeric.
+* InvoiceDate: Invoice Date and time. Numeric, the day and time when each transaction was generated.
+* UnitPrice: Unit price. Numeric, Product price per unit in sterling.
+* CustomerID: Customer number. Nominal, a 5-digit integral number uniquely assigned to each customer.
+* Country: Country name. Nominal, the name of the country where each customer resides. 
+
+
+## Data Cleaning and feature extraction
+- There are a few products that have negative quantities associated to it. We exclude them from our analysis.  
+- Get Recency, First purchase and last purchase made by customers and the total value of each transaction (QTY*PRICE)
+- Identify repeat customers
+
+
+
+```{r}
+#1. Get Recency, First purchase and last purchase made by customers and the total value of each transaction (QTY*PRICE)
+max_InvoiceDate = max(ucl_data$InvoiceDate)
+# today = max_InvoiceDate+2
+ucl_data = ucl_data %>% group_by(CustomerID) %>% mutate(Recency = max_InvoiceDate-max(InvoiceDate),First_purchase = max_InvoiceDate - min(InvoiceDate) ,Value = Quantity*UnitPrice, Frequency = n_distinct(InvoiceNo)) %>%arrange(InvoiceDate) 
+
+# 2. Filter out Qty < 0 
+neg = ucl_data %>% filter(Quantity<0)
+ucl_data = ucl_data %>% filter(Quantity>=0)
+
+# 3. Get customers with repeat transactions
+ucl_data = ucl_data %>% group_by(CustomerID) %>% mutate(repeat_customers = ifelse(n_distinct(InvoiceNo)>1,n_distinct(InvoiceNo),0)) 
+```
+
+
+# Data Analysis {.tabset .tabset-fade .tabset-pills}
+
+## Summarizing the data
+```{r,message=FALSE}
+ucl_summary = ucl_data %>% group_by(CustomerID) %>% summarize(Last_purchase = max(InvoiceDate), First_purchase = min(InvoiceDate),
+                                                              Frequency = n_distinct(InvoiceNo), Sales = mean(Value) ,repeat_customers = ifelse(mean(repeat_customers)>0,1,0))
+
+
+ucl_summary = ucl_summary %>% mutate(time_between = Last_purchase-First_purchase, recency = abs(max_InvoiceDate - Last_purchase))
+head(ucl_summary)
+
+print(paste("Total number of customers transacted in the given period = ", nrow(ucl_summary)))
+```
+
+## Proportion of repeat customers
+```{r}
+recency_prop = 100* table(as.factor(ucl_summary$repeat_customers))/sum(table(as.factor(ucl_summary$repeat_customers)))
+print(recency_prop)
+```
+~66% of customers have transacted more than once
+
+
+## Sales plot
+
+```{r}
+# make log plot and plot sales
+# Check purchasing behavior of most valuable customer 
+
+high_customer = ucl_data %>% group_by(CustomerID) %>% mutate(sum_val = sum(Value)) #%>% filter(sum_val == max(sum_val))
+high_customer = high_customer %>% filter(sum_val == max(high_customer$sum_val))
+high_customer = high_customer %>% group_by(InvoiceDate,InvoiceNo) %>% mutate(sum_val = sum(sum_val))
+ggplot(high_customer, aes(x=InvoiceDate,y=(Quantity),group=Frequency))+
+    geom_point()+
+    scale_x_date()+
+    geom_smooth()+
+    #ylim(0,1000)+
+    scale_y_log10()+
+    ggtitle("Sales for individual customers")+
+    ylab("Sales ($, US)")+xlab("")+
+    theme_minimal()
+
+```
+
+This plot shows that the log plot of sales for most valuable customer. There is a purchasing pattern to the quantity purchased
+
+The median money spent by a customer is 9.9\$ and the mean is 20$
+
+## Days between orders
+```{r}
+# look at days between orders
+# model describes rates via a gamma distribution across customers
+library(plyr)
+purchaseFreq <- ddply(ucl_data %>% filter(Frequency>1), .(CustomerID), summarize, 
+     daysBetween = as.numeric(diff(InvoiceDate)))
+detach(package:plyr)
+
+library(grDevices)
+library(dplyr)
+ggplot(purchaseFreq %>% filter( daysBetween>0),aes(x=daysBetween))+
+    geom_histogram(fill="orange")+
+    xlab("Time between purchases (days)")+
+    theme_minimal()
+
+```
+
+This plot shows that with time, the number of repeat transactions reduces. This shows heteroginity in customer purchase
+
+## Time gap vs Frequency
+```{r}
+colnames(ucl_summary)
+ggplot(ucl_summary %>% filter(Frequency>1), aes(x = time_between, y = Frequency, color = as.factor(repeat_customers))) + geom_point() + ylim(0,50)
+### Problem
+```
+
+If the time-gap between first and last transaction is large, the mean frequency of purchase is also high.
+
+
+
+
+
+# PnBD and BGnBD Models {.tabset .tabset-fade .tabset-pills}
+
+
+
+```{r , message=FALSE,results=FALSE}
+## Convert Data to RFM matrix for PnBD and BGnBD models and split data to training (caliberation) and test (holdout) set
+source("model_data_prep.R")
+```
+
+
+```{r, message=FALSE, results=FALSE}
+## Parameter Estimates: PnBD model: 
+params = pnbd.EstimateParameters(cal.cbs)
+params
+LL = pnbd.cbs.LL(params,cal.cbs)
+LL
+#Run multiple iterations to get optimal parameters 
+p.matrix = c(params,LL)
+for(i in 1:10){
+  params = pnbd.EstimateParameters(cal.cbs,params)
+  LL = pnbd.cbs.LL(params,cal.cbs)
+  p.matrix.row = c(params,LL)
+  p.matrix = rbind(p.matrix,p.matrix.row)
+}
+colnames(p.matrix) <- c("r","alpha","s","beta","LL")
+rownames(p.matrix) <- 1:nrow(p.matrix)
+p.matrix
+# params = p.matrix[3,]
+```
+
+```{r, results=FALSE, message=FALSE}
+## Estimating model parameters BGnBD:: Parameters are estimated by maximising log-likelihood
+#start params = (1,1,1,1)
+params_bgnbd = bgnbd.EstimateParameters(cal.cbs,par.start = c(1,1,1,2))
+params_bgnbd
+LL = bgnbd.cbs.LL(params_bgnbd,cal.cbs)
+LL
+#Run multiple iterations to get optimal parameters 
+p.matrix_bgnd = c(params_bgnbd,LL)
+for(i in 1:10){
+  params_bgnbd = bgnbd.EstimateParameters(cal.cbs,params_bgnbd)
+  LL = bgnbd.cbs.LL(params_bgnbd,cal.cbs)
+  p.matrix_bgnd.row = c(params_bgnbd,LL)
+  p.matrix_bgnd = rbind(p.matrix_bgnd,p.matrix_bgnd.row)
+}
+colnames(p.matrix_bgnd) <- c("r","alpha","a","beta","LL")
+rownames(p.matrix_bgnd) <- 1:nrow(p.matrix_bgnd)
+p.matrix_bgnd
+# params_bgnbd = p.matrix_bgnd[8,]
+```
+
+
+## PNBD  
+
+The Pareto/Negative Binomial Distribution model is perhaps the most well-known and frequently applied probabilistic model in the non-contractual context. Pareto/NBD only focuses on the purchase count and lifetime of a customer. 
+
+
+```{r,results=FALSE, message=FALSE}
+pnbd.PlotTransactionRateHeterogeneity(params) ## gamma distribution
+```
+
+The plot above shows that customers are more likely to have low values of individual poisson transaction process parameters. It shows that only a few customers have high transaction rate.
+This validates the heteroginity across customer transactions. Repeat customer buy around their own mean of purchasing time. The timegap between purchases would be different for different customers. 
+
+
+
+```{r, results=FALSE, message=FALSE}
+pnbd.PlotDropoutRateHeterogeneity(params,lim = 0.5) ## gamma mixing distribution of Pareto dropout process
+```
+
+The above plot shows the distribution of customers’ propensities to drop out. Only a few customer densities have high drop-out rates.
+
+
+
+## BGnBD 
+
+Why BGnBD model?
+Beta Geometric Negative Binomial Distribution  can be used to determine the expected repeat visits for customers in order to determine a customers lifetime value. It can also be used to determine whether a customer has churned or is likely to churn soon.
+
+```{r ,results=FALSE, message=FALSE}
+bgnbd.PlotTransactionRateHeterogeneity(params_bgnbd) ## gamma distribution
+##  This plot shows that customers are more likely to have low values of individual poisson transaction process parameters. 
+## This means that with time the number of transactions made by a customer reduces, which is expected
+```
+The plot above shows that customers are more likely to have low values of individual poisson transaction process parameters. It shows that only a few customers have high transaction rate. This basically shows the heteroginity across customer transactions. It validates the fact that repeat customer buys around their own mean of purchasing time. The timegap between purchases would be different for different customers. No customer would buy forever. The time for dropout for different customers varies.
+
+
+```{r}
+bgnbd.PlotDropoutRateHeterogeneity(params_bgnbd) ## gamma mixing distribution of BGnBD dropout process
+```
+
+The above plot shows the distribution of customers’ propensities to drop out. Only a few customer densities have high drop-out rates. There is also a heteroginity involved for customers dropout. No customer would buy forever. The time for dropout for different customers varies. This should be expected in a transactional setting of an online retail store. 
+
+
+##Individual Level Estimates
+1. Number of repeat transactions a new customer would make in given time period: t 
+```{r}
+
+for(t in seq(40,100,by=10)){
+print(paste("Expected number of repeat transaction by a new customer in",t,"days =" ,pnbd.Expectation(params,t = t)))
+}
+```
+
+This shows that a new customer is most likely to transact again after 3 months
+
+###For a specific customer::12662
+```{r}
+cust.12662 <- cal.cbs["12662",]
+x = cust.12662["x"]
+t.x = cust.12662["t.x"]
+T.cal = cust.12662["T.cal"]
+
+for(t in seq(40,100,by=10)){
+  print(paste("Expected number of repeat transaction by customer 12662 in",t,"days =" ,pnbd.ConditionalExpectedTransactions(params,T.star = t,x,t.x,T.cal)))
+}
+```
+
+Customer 12662 will most likely transact again atleast once within 2 months
+
+
+#Model Performance {.tabset .tabset-fade .tabset-pills}
+## Model vs actual:: Training Period {.tabset .tabset-fade .tabset-pills}
+### PnBD
+```{r,message=FALSE}
+pnbd.PlotFrequencyInCalibration(params,cal.cbs,3)
+```
+
+This plot shows the actual and expected number of customers who made repeat transactions in the caliberation period binned as per frequencies
+
+### BGnBD
+```{r,message=FALSE}
+bgnbd.PlotFrequencyInCalibration(params_bgnbd,cal.cbs,3)
+```
+
+This plot shows the actual and expected number of customers who made repeat transactions in the caliberation period binned as per frequencies
+The difference between PNBD and BGNBD models is not much in this case
+
+## Model vs actual:: Test (Holdout) Period {.tabset .tabset-fade .tabset-pills} 
+The frequency plot above shows that the models perform alright in the caliberation period. But that does not mean that the models are good. To test the performance of the model, it is important to see how they perform in the holdout/test period. 
+
+### PnBD
+```{r,results=FALSE,message=FALSE}
+source("data_prep_holdout.R")
+T.star =  as.numeric(max(ucl_log_sum$date)-threshold_date+1)
+censor = 11
+x.star = cal.cbs2[,"x.star"]
+comp = pnbd.PlotFreqVsConditionalExpectedFrequency(params,T.star = T.star,cal.cbs=cal.cbs2,x.star,censor)
+```
+
+The PnBD model does well in the holdout period, however we do see deviations becoming larger towards the end. 
+
+
+### BGnBD
+```{r,results=FALSE,message=FALSE}
+T.star =  as.numeric(max(ucl_log_sum$date)-threshold_date+1)
+censor = 11
+x.star = cal.cbs2[,"x.star"]
+comp = bgnbd.PlotFreqVsConditionalExpectedFrequency(params_bgnbd,T.star = T.star,cal.cbs=cal.cbs2,x.star,censor)
+```
+
+The BGnBD model also esitmates well.
+
+
+
+# Comparing cummulative actual sales with predicted transactions {.tabset .tabset-fade .tabset-pills}
+Next, to check if the models capture the trend of transactions, we test how the model performs against cummulative sales in the holdout period. This in itself gives an idea as to predict customer behavior in the future. 
+
+```{r,message=FALSE,results=FALSE}
+#Get total daily sales 
+d.track = rep(0,period)
+origin = min(ucl_data$InvoiceDate)
+for(i in colnames(tot.cbt)){
+  date.index = (as.numeric(difftime(as.Date(i),origin))+1)
+  d.track[date.index] = sum(tot.cbt[,i])
+}
+
+# Get mean weekly actual sales 
+w.track = rep(0,round(period/7))
+for (j in 1:length(w.track)) {
+w.track[j] =  mean(d.track[(j*7-6):(j*7)]) 
+}
+
+T.cal =(cal.cbs2[,"T.cal"])
+T.tot = as.numeric(round((range(ucl_data$InvoiceDate)[2]-range(ucl_data$InvoiceDate)[1])))
+
+```
+
+
+## PnBD
+```{r,message=FALSE,results=FALSE}
+## Cummalative daily tracking 
+cum.track = cumsum(d.track)
+cum.tracking = pnbd.PlotTrackingCum(params,T.cal,T.tot,cum.track , title = "Tracking daily cumulative transactions",xlab = "Days")
+
+
+## Cummalative weekly tracking 
+cum.track.week = cumsum(w.track)
+cum.tracking.week = pnbd.PlotTrackingCum(params,T.cal,T.tot/7,cum.track.week)
+
+```
+
+PnBD captures the trend in cummualtive sales reasonably well.  
+
+## BGnBD
+
+```{r,results=FALSE,message=FALSE}
+## Cummalative daily tracking 
+cum.track = cumsum(d.track)
+cum.tracking = bgnbd.PlotTrackingCum(params_bgnbd,T.cal,T.tot,cum.track, title = "Tracking daily cumulative transactions",xlab = "Days")
+
+## Cummalative weekly tracking 
+cum.track.week = cumsum(w.track)
+cum.tracking.week = bgnbd.PlotTrackingCum(params_bgnbd,T.cal,T.tot/7,cum.track.week)
+```
+
+Again the difference in the 2 models for this dataset is insignificant.
+
+# Weekly and Daily transactional forecasts {.tabset .tabset-fade .tabset-pills}
+While it was useful to check the models against cummulative sales, we could also test the models performance against daily and weekly transactions. To test the models, we first extract the actual daily and weekly values in the holdout period and then compare with the expected values
+
+
+## Daily forecasts {.tabset .tabset-fade .tabset-pills}
+
+Both the models capture the trend in daily sales.
+
+### PnBD
+```{r,message=FALSE,results=FALSE}
+inc.tracking.daily = pnbd.PlotTrackingInc(params,T.cal=T.cal,T.tot,actual.inc.tracking.data = d.track,title = "Tracking daily transactions",xlab = "Days")
+inc.tracking.daily[,20:30]
+```
+
+### BGnBD
+```{r,results=FALSE,message=FALSE}
+inc.tracking.daily = bgnbd.PlotTrackingInc(params_bgnbd,T.cal=T.cal,T.tot,actual.inc.tracking.data = d.track, title = "Tracking daily transactions",xlab = "Days")
+inc.tracking.daily[,20:30]
+```
+
+
+## Weekly forecasts {.tabset .tabset-fade .tabset-pills}
+Both PnBD and BGnBD models capture the trend of weekly transactons well. The difference between the 2 models is not that significant as more than 60% of the customers are repeat customers, which is really high. 
+While both the models capture the trend and average value of customers well, it does not capture effects of seasonality and marketing campaigns well.
+
+### PnBD
+
+```{r}
+inc.tracking.weekly = pnbd.PlotTrackingInc(params,T.cal=T.cal,T.tot/7,actual.inc.tracking.data = w.track)
+inc.tracking.weekly[,1:10]
+```
+
+### BGnBD
+```{r,message=FALSE,results=FALSE}
+inc.tracking.weekly = bgnbd.PlotTrackingInc(params_bgnbd,T.cal=T.cal,T.tot/7,actual.inc.tracking.data = w.track)
+inc.tracking.weekly[,1:10]
+```
+
+
+
+
+# Deep Neural Network
+
+To include demographics and seasonality, I train and deep neural network with 3 hidden layers (64,32,16) and test how the model performs in the holdout period. I have stored the results of the DNN on the test set in test_results.csv
+
+
+```{r,message=FALSE,results=FALSE}
+holdout_nn = read.csv("test_results.csv",stringsAsFactors = F)
+holdout_nn = holdout_nn %>% mutate(InvoiceDate=as.Date(InvoiceDate))
+ggplot(data = holdout_nn,aes(x=InvoiceDate,y=actual_sale))+geom_line()+geom_line(aes(y=pred_sale),color="red")+ylim(0,100)
+```
+
+This looks ok, but the plot is not too clear because of volume of data. 
+
+ Next we look at the mean of the predicted sales to see if the trends are captured.
+
+```{r,message=FALSE}
+#detach(package:plyr)
+library(ggplot2)
+library(dplyr)
+holdout_nn2 = holdout_nn %>% group_by(InvoiceDate) %>% summarize(pred_sale=mean(pred_sale),actual_sale=mean(actual_sale))
+ggplot(data = holdout_nn2,aes(x=InvoiceDate,y=pred_sale))+geom_line(color="blue")+geom_line(aes(y=actual_sale))+ylim(15,26)
+# print(unique(holdout_nn$pred_sale))
+```
+
+
+
+The mean captures the ups and downs, but this model can be improved further by adding engagement metrics and tuning the network further.
+
+
+# Next Steps:
+As future work, I would be taking up the following
+- Fine tune DNN model
+- Include more engagement features for DNN
+- Include attribution analysis
+- Perform per product analysis to forecast customer demand for each product
+
+
+
+# Conclusion 
+We saw how we could calculate CLV for an online retail store. CLV can help in understanding the value of each customer. Driving managerial decisions based on CLV is the step to be taken to be more customer oriented and for faster growth.
+
+You can find the consolidated code for DNN and BTYD models at https://github.com/ragav208/uci_clv
+
+# References
+- An Engagement-Based Customer Lifetime Value System for E-commerce (https://www.youtube.com/watch?v=UmP3UePGO7E)
+- Estimating individual Customer Lifetime Values with R: The CLVTools Package (https://www.youtube.com/watch?v=KJCYjjWNgLM)
+- CLV in Ecommerce by Peter Fader. (https://community.firstmarkcap.com/content/clv-in-e-commerce-2013-10-23)
+- Customer Lifetime Value Prediction Using Embeddings (https://medium.com/syncedreview/customer-lifetime-value-prediction-using-embeddings-53f54e2ac59d)

@@ -1,0 +1,262 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r}
+ucl_data = read.csv("~/Downloads/Online_Retail.csv",stringsAsFactors = F)
+str(ucl_data)
+```
+
+```{r}
+library(dplyr)
+ucl_data = ucl_data %>% mutate(InvoiceDate = as.POSIXct(InvoiceDate,format = "%m/%d/%Y %H:%M"))
+ucl_data = ucl_data %>% mutate(InvoiceDate = as.Date(InvoiceDate))
+```
+
+#Get data for the last 3 months
+# Group by product and customer, get recency and Value of transactions per customer and the frequency of purchases 
+```{r}
+max_InvoiceDate = max(ucl_data$InvoiceDate)
+today = max_InvoiceDate+2
+
+ucl_data = ucl_data %>% filter(InvoiceDate >= (today-90)) %>% group_by(Description,CustomerID) %>% mutate(Recency = max_InvoiceDate-InvoiceDate,Value = Quantity*UnitPrice, Frequency = n()) %>%arrange(InvoiceDate) 
+```
+
+#Negative Quantity data: Remove for now. Later we will see if this is lack of stock and how does it impact important customers  
+```{r}
+library(BTYD)
+library(ggplot2)
+
+neg = ucl_data %>% filter(Quantity<0)
+ucl_data = ucl_data %>% filter(Quantity>=0)
+
+ggplot(data = ucl_data,aes(x=InvoiceDate,y=Value))+geom_line() #+ylim(0,1000)
+```
+
+### Outlier Removal 
+```{r}
+ul = quantile(ucl_data$Value,p=0.75)+(1.5*IQR(ucl_data$Value))
+ll = quantile(ucl_data$Value,p=0.25)-(1.5*IQR(ucl_data$Value))
+ucl_data = ucl_data %>% mutate(outlier = ifelse((Value >= ul) | (Value <=ll),1,0))
+ucl_data = ucl_data %>% filter(outlier==0)
+ggplot(data = ucl_data,aes(x=InvoiceDate,y=Value))+geom_line() #+ylim(0,1000)
+```
+
+## Train and Test split:: Taking 80% train and 20% test. 
+```{r}
+threshold_date = unique(ucl_data$InvoiceDate)[round(length(unique(ucl_data$InvoiceDate)) * 0.8)]
+train_ucl = ucl_data %>% filter(InvoiceDate<=threshold_date)
+test_ucl = ucl_data %>% filter(InvoiceDate>threshold_date)
+```
+
+
+
+
+## Repeat Customers: 
+1. Check for repeat customers by grouping by CustomerID and then looking at unique InvoiceNo
+2. Check for repeat product purchases per customer by grouping by CustomerID and Description and then looking at unique InvoiceNo
+```{r}
+## Overall Data 
+ucl_data = ucl_data %>% group_by(CustomerID) %>% mutate(repeat_customers = n_distinct(InvoiceNo)) #%>% ungroup() %>%  group_by(CustomerID,Description) %>% mutate(repeat_customers = n_distinct(InvoiceNo)) %>% ungroup()
+ucl_data = ucl_data %>%  group_by(CustomerID,Description) %>% mutate(repeat_prod_customers = n_distinct(InvoiceNo))
+ucl_prod = ucl_data %>%  group_by(CustomerID,Description) %>% summarize(repeat_prod_customers = n_distinct(InvoiceNo))
+customer_prop = table(ucl_data$repeat_customers>1)
+customer_prop = (customer_prop/sum(customer_prop))*100
+print(customer_prop)
+
+prod_prop = table(ucl_data$repeat_prod_customers>1)
+prod_prop = (prod_prop/sum(prod_prop))*100
+print(prod_prop)
+```
+
+79.7% of customers transact more than once and 43.9% of the products are bought by the same customer again
+
+
+3. Same analysis on training Data 
+```{r}
+train_ucl = train_ucl %>% group_by(CustomerID) %>% mutate(repeat_customers = n_distinct(InvoiceNo)) #%>% ungroup() %>%  group_by(CustomerID,Description) %>% mutate(repeat_customers = n_distinct(InvoiceNo)) %>% ungroup()
+train_ucl = train_ucl %>%  group_by(CustomerID,Description) %>% mutate(repeat_prod_customers = n_distinct(InvoiceNo))
+train_prod = train_ucl %>%  group_by(CustomerID,Description) %>% summarize(repeat_prod_customers = n_distinct(InvoiceNo))
+customer_prop = table(train_ucl$repeat_customers>1)
+customer_prop = (customer_prop/sum(customer_prop))*100
+print(customer_prop)
+
+prod_prop = table(train_ucl$repeat_prod_customers>1)
+prod_prop = (prod_prop/sum(prod_prop))*100
+print(prod_prop)
+
+```
+
+72.7% of customers transact more than once and 36.9% of the products are bought by the same customer again
+
+
+
+```{r}
+ggplot(ucl_data, aes(x= InvoiceDate,y=repeat_customers))+geom_line()
+ggplot(ucl_data, aes(x= InvoiceDate,y=repeat_prod_customers))+geom_line()
+
+ggplot(train_ucl, aes(x= InvoiceDate,y=repeat_customers))+geom_line()
+ggplot(train_ucl, aes(x= InvoiceDate,y=repeat_prod_customers))+geom_line()
+
+```
+
+
+# Feature Engineering 
+1. first_purchase is days after first purhase by a customer 
+2. last_puchase is days after last purchase by a customer
+3. time_between = mean time between first and last purchase of a customer
+4. monetory_dnn = Total Value spent by each customer for DNN
+5. monetory_btyd = Mean Value spent by each customer for btyd models
+```{r}
+max_date = max(ucl_data$InvoiceDate)
+ucl_data = ucl_data %>% group_by(CustomerID) %>% mutate(first_purchase = as.Date(max_date) - as.Date(min(InvoiceDate)), last_purchase = as.Date(max_date)-as.Date(max(InvoiceDate)), monetory_dnn = sum(Value), monetory_btyd = mean(Value),time_between = mean(last_purchase-first_purchase))
+```
+
+```{r}
+max_date = max(train_ucl$InvoiceDate)
+train_ucl = train_ucl %>% group_by(CustomerID) %>% mutate(first_purchase = as.Date(max_date) - as.Date(min(InvoiceDate)), last_purchase = as.Date(max_date)-as.Date(max(InvoiceDate)), monetory_dnn = sum(Value), monetory_btyd = mean(Value),time_between = mean(last_purchase-first_purchase))
+
+```
+
+
+## Median Value spent per transaction by a customer 
+```{r}
+ucl_data = ucl_data %>% group_by(CustomerID,InvoiceNo) %>% mutate(avg_val = median(Value))
+customer_1262 = ucl_data %>% filter(CustomerID==12662)
+ggplot(data = customer_1262, aes(x = InvoiceDate,y = avg_val))+geom_line()
+```
+
+```{r}
+train_ucl = train_ucl %>% group_by(CustomerID,InvoiceNo) %>% mutate(avg_val = median(Value))
+customer_1262 = train_ucl %>% filter(CustomerID==12662)
+ggplot(data = customer_1262, aes(x = InvoiceDate,y = avg_val))+geom_line()
+```
+
+
+
+# Modeling Start: 
+
+## 1. Pareto NBD: The Pareto/NBD model is used for non-contractual situations in which customers can make purchases at any time. Using four parameters, it describes the rate at which customers make purchases and the rate at which they drop out, allowing for heterogeneity in both regards.
+
+### Columns Required: Transaction value made by each customer, Date of Purchase, CustomerID
+1. Select columns required 
+2. Prepare Data to create frequency matrix
+3. Create Frequency matrix
+```{r}
+library(BTYD)
+#1. Select columns required 
+pareto_train = ucl_data %>% ungroup %>% select(CustomerID,Value,InvoiceDate)
+# pareto_train = pareto_train %>% filter(InvoiceDate <= threshold_date)
+
+#2. Prepare Data to create frequency matrix
+pareto_train = pareto_train %>% rename(cust = CustomerID, date = InvoiceDate)
+# Merge transactions on same da
+pareto_train = dc.MergeTransactionsOnSameDate(pareto_train)
+
+pareto.cal<-pareto_train[which(pareto_train$date<=threshold_date), ]
+
+## Remove customers who donot make repeat transactions for now 
+split.data<-dc.SplitUpElogForRepeatTrans(pareto.cal)
+clean.pareto<-split.data$repeat.trans.elog
+
+#3. Create Frequency matrix
+freq.cbt<-dc.CreateFreqCBT(clean.pareto)
+freq.cbt[1:3,1:5]
+
+#4 Adding back 0 repeat customers
+tot.cbt<-dc.CreateFreqCBT(pareto_train)
+cal.cbt<-dc.MergeCustomers(tot.cbt, freq.cbt)
+
+
+birth.periods<-split.data$cust.data$birth.per
+last.dates<-split.data$cust.data$last.date
+cal.cbs.dates<-data.frame(birth.periods, last.dates,threshold_date)
+cal.cbs<-dc.BuildCBSFromCBTAndDates(cal.cbt, cal.cbs.dates,per="week")
+
+```
+### Parameter estimation for pareto
+```{r}
+#5 Parameter estimation
+params<-pnbd.EstimateParameters(cal.cbs)
+params
+
+LL<-pnbd.cbs.LL(params, cal.cbs)
+LL
+
+p.matrix<-c(params, LL)
+for(i in 1:2){
+  params<-pnbd.EstimateParameters(cal.cbs, params)
+  LL<-pnbd.cbs.LL(params, cal.cbs)
+  p.matrix.row<-c(params, LL)
+  p.matrix<-rbind(p.matrix, p.matrix.row)}
+colnames(p.matrix)<-c("r","alpha","s","beta","LL")
+rownames(p.matrix)<-1:3
+p.matrix
+
+pnbd.PlotTransactionRateHeterogeneity(params)
+pnbd.PlotDropoutRateHeterogeneity(params = params,5)
+# pnbd.Plot.DERT(params,cal.cbs)
+pnbd.PlotFrequencyInCalibration(params, cal.cbs,6)
+pnbd.Expectation(params,t=52)
+```
+
+
+```{r}
+cal.cbs["12997",]
+x<-cal.cbs["12997","x"]
+t.x<-cal.cbs["12997","t.x"]
+T.cal<-cal.cbs["12997","T.cal"]
+pnbd.ConditionalExpectedTransactions(params,T.star=52,x, t.x, T.cal)
+pnbd.PAlive(params, x, t.x, T.cal)
+
+for(i in seq(10,25,5)){cond.expectation<-pnbd.ConditionalExpectedTransactions(params,T.star=52,x= i,t.x=20,T.cal=39)
+cat("x:",i,"\t Expectation:",cond.expectation,fill=TRUE)
+}
+
+pnbd.PlotFrequencyInCalibration(params, cal.cbs,6)
+```
+
+```{r}
+elog<-dc.SplitUpElogForRepeatTrans(pareto_train)$repeat.trans.elog;
+x.star<-rep(0,nrow(cal.cbs))
+cal.cbs<-cbind(cal.cbs, x.star)
+elog.custs<-elog$cust
+
+for(i in 1:nrow(cal.cbs)){current.cust<-rownames(cal.cbs)[i]
+tot.cust.trans<-length(which(elog.custs==current.cust))
+cal.trans<-cal.cbs[i,"x"]
+cal.cbs[i,"x.star"]<-tot.cust.trans-cal.trans}
+
+T.star<-14
+censor<-3
+x.star<-cal.cbs[,"x.star"]
+comp<-pnbd.PlotFreqVsConditionalExpectedFrequency(params, T.star,cal.cbs, x.star, censor)
+```
+
+
+```{r}
+tot.cbt<-dc.CreateFreqCBT(pareto_train)
+d.track.data<-rep(0,7*71)
+origin<-as.Date("1997-01-01")
+for(i in colnames(tot.cbt)){
+  date.index<-difftime(as.Date(i),origin)+1
+  d.track.data[date.index]<-sum(tot.cbt[,i])}
+w.track.data<-rep(0,71)
+for(j in 1:71){
+  w.track.data[j]<-sum(d.track.data[(j*7-6):(j*7)])}
+
+T.cal<-cal.cbs[,"T.cal"]
+T.tot<-61 
+n.periods.final<-61
+inc.tracking<-pnbd.PlotTrackingInc(params, T.cal,T.tot, w.track.data,n.periods.final)
+
+
+
+
+cum.tracking.data<-cumsum(w.track.data)
+cum.tracking<-pnbd.PlotTrackingCum(params, T.cal,T.tot, cum.tracking.data,n.periods.final)
+```
+
